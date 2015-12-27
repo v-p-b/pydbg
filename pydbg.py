@@ -26,10 +26,10 @@
 
 import os.path
 import sys
+import capstone
 import copy
 import signal
 import struct
-import pydasm
 import socket
 
 from my_ctypes  import *
@@ -54,6 +54,42 @@ from memory_snapshot_context import *
 from pdx                     import *
 from system_dll              import *
 
+
+class pydasm_inst:
+    '''
+    Simple wrapper class for Capstone.Instructions to act as pydasm.Instructions
+    [TODO] Many attributes are set to None, or are set naively!
+    '''
+    def __init__(self,i):
+        ops=None
+        if i.op_str is None:
+            ops=[]
+        else:
+            ops=[o.strip() for o in i.op_str.split(",")]
+        ops.extend(["" for x in xrange(0,3-len(ops))])
+        self.op1, self.op2, self.op3 = ops
+        self.i = i
+        self.mnemonic = i.mnemonic
+        self.length = i.size
+        self.flags1 = None
+        self.flags2 = None
+        self.flags3 = None
+        self.type = "INSTRUCTION_TYPE_%s" % (i.mnemonic.upper)
+        self.modrm = None
+        self.sib = None
+        self.extindex = None
+        self.fpuindex = None
+        self.dispbytes = i.bytes
+        self.immbytes = None
+        self.sectionbytes = None
+        self.flags = None
+        self.ptr = None
+    
+    def __str__(self):
+        return "%s\t%s" % (self.i.mnemonic,self.i.op_str) 
+        
+        
+
 class pydbg:
     '''
     This class implements standard low leven functionality including:
@@ -70,7 +106,7 @@ class pydbg:
         - Memory breakpoints (page permissions).
         - Hardware breakpoints.
         - Exception / event handling call backs.
-        - Pydasm (libdasm) disassembly wrapper.
+        - Capstone disassembly wrapper.
         - Process memory snapshotting and restoring.
         - Endian manipulation routines.
         - Debugger hiding.
@@ -156,6 +192,13 @@ class pydbg:
 
         self._log("system page size is %d" % self.page_size)
 
+
+    ####################################################################################################################
+    def get_instruction_string(self,i):
+        '''
+        Mimicking pydasm's get_instruction_string()
+        '''
+        return "%s\t%s" % (i.mnemonic, i.op_str)
 
     ####################################################################################################################
     def addr_to_dll (self, address):
@@ -991,7 +1034,7 @@ class pydbg:
     ####################################################################################################################
     def disasm (self, address):
         '''
-        Pydasm disassemble utility function wrapper. Stores the pydasm decoded instruction in self.instruction.
+        Disassemble utility function wrapper. Stores the decoded instruction in self.instruction.
 
         @type  address: DWORD
         @param address: Address to disassemble at
@@ -1006,7 +1049,10 @@ class pydbg:
             return "Unable to disassemble at %08x" % address
 
         # update our internal member variables.
-        self.instruction = pydasm.get_instruction(data, pydasm.MODE_32)
+        md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_32)
+        for i in md.disasm(data,address):
+            self.instruction = i
+            break
 
         if not self.instruction:
             self.mnemonic = "[UNKNOWN]"
@@ -1016,13 +1062,18 @@ class pydbg:
 
             return "[UNKNOWN]"
         else:
-            self.mnemonic = pydasm.get_mnemonic_string(self.instruction, pydasm.FORMAT_INTEL)
-            self.op1      = pydasm.get_operand_string(self.instruction, 0, pydasm.FORMAT_INTEL, address)
-            self.op2      = pydasm.get_operand_string(self.instruction, 1, pydasm.FORMAT_INTEL, address)
-            self.op3      = pydasm.get_operand_string(self.instruction, 2, pydasm.FORMAT_INTEL, address)
+            self.mnemonic = self.instruction.mnemonic
+            ops=None
+            if self.instruction.op_str is None:
+                ops=[]
+            else:
+                ops=self.instruction.op_str.split(",")
+            ops.extend(["" for i in xrange(0,3-len(ops))])
+            self.op1, self.op2, self.op3 = ops
 
             # the rstrip() is for removing extraneous trailing whitespace that libdasm sometimes leaves.
-            return pydasm.get_instruction_string(self.instruction, pydasm.FORMAT_INTEL, address).rstrip(" ")
+            #return pydasm.get_instruction_string(self.instruction, pydasm.FORMAT_INTEL, address).rstrip(" ")
+            return self.get_instruction_string(self.instruction)
 
 
     ####################################################################################################################
@@ -1061,8 +1112,7 @@ class pydbg:
             return [(address, "Unable to disassemble")]
 
         # the rstrip() is for removing extraneous trailing whitespace that libdasm sometimes leaves.
-        i           = pydasm.get_instruction(data[window_size:], pydasm.MODE_32)
-        disassembly = pydasm.get_instruction_string(i, pydasm.FORMAT_INTEL, address).rstrip(" ")
+        md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_32)
         complete    = False
         start_byte  = 0
 
@@ -1070,34 +1120,16 @@ class pydbg:
         while not complete:
             instructions = []
             slice        = data[start_byte:]
+            slice_address = address - window_size + start_byte
             offset       = 0
-
-            # step through the bytes in the data slice.
-            while offset < len(slice):
-                i = pydasm.get_instruction(slice[offset:], pydasm.MODE_32)
-
-                if not i:
-                    break
-
-                # calculate the actual address of the instruction at the current offset and grab the disassembly
-                addr = address - window_size + start_byte + offset
-                inst = pydasm.get_instruction_string(i, pydasm.FORMAT_INTEL, addr).rstrip(" ")
-
-                # add the address / instruction pair to our list of tuples.
-                instructions.append((addr, inst))
-
-                # increment the offset into the data slice by the length of the current instruction.
-                offset += i.length
-
-            # we're done processing a data slice.
-            # step through each addres / instruction tuple in our instruction list looking for an instruction alignment
-            # match. we do the match on address and the original disassembled instruction.
+            for i in md.disasm(slice,slice_address):
+                instructions.append((i.address,pydasm_inst(i)))
+                
             index_of_address = 0
-            for (addr, inst) in instructions:
-                if addr == address and inst == disassembly:
+            for addr,inst in instructions:
+                if address == addr:
                     complete = True
                     break
-
                 index_of_address += 1
 
             start_byte += 1
@@ -1966,8 +1998,9 @@ class pydbg:
             data  = self.read_process_memory(address, 32)
         except:
             return "Unable to disassemble at %08x" % address
-
-        return pydasm.get_instruction(data, pydasm.MODE_32)
+        md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_32)
+        for i in md.disasm(data,address):
+            return pydasm_inst(i)
 
 
     ####################################################################################################################
