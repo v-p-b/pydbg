@@ -7,6 +7,13 @@ In the current state this branch probably works for those software that I person
 
 If you need a good introduction to PyDbg you should check out the book [Gray Hat Python](https://www.nostarch.com/ghpython.htm)!
 
+Installation
+------------
+
+There is a small setup script provided, `setup.py install` should just work _as long as the repo is cloned to a directory called pydbg!_
+
+The installer script of PaiMei checks requirement by trying to import the corresponding modules, so you should be good to go with that if you install pydbg first.
+
 License
 -------
 
