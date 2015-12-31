@@ -54,11 +54,38 @@ from memory_snapshot_context import *
 from pdx                     import *
 from system_dll              import *
 
+'''
+From libdasm.h:
 
+// struct INSTRUCTION is used to interface the library
+typedef struct _INSTRUCTION {
+        int length;             // Instruction length
+        enum Instruction type;  // Instruction type
+        enum Mode mode;         // Addressing mode
+        BYTE opcode;            // Actual opcode
+        BYTE modrm;             // MODRM byte
+        BYTE sib;               // SIB byte
+        int modrm_offset;       // MODRM byte offset
+        int extindex;           // Extension table index
+        int fpuindex;           // FPU table index
+        int dispbytes;          // Displacement bytes (0 = no displacement)
+        int immbytes;           // Immediate bytes (0 = no immediate)
+        int sectionbytes;       // Section prefix bytes (0 = no section prefix)
+        OPERAND op1;            // First operand (if any)
+        OPERAND op2;            // Second operand (if any)
+        OPERAND op3;            // Additional operand (if any)
+        PINST ptr;              // Pointer to instruction table
+        int flags;              // Instruction flags
+        short eflags_affected;  // Process eflags affected
+        short eflags_used;      // Processor eflags used by this instruction
+        int iop_written;        // mask of affected implied registers (written)
+        int iop_read;           // mask of affected implied registers (read)
+} INSTRUCTION, *PINSTRUCTION;
+'''
 class pydasm_inst:
     '''
     Simple wrapper class for Capstone.Instructions to act as pydasm.Instructions
-    [TODO] Many attributes are set to None, or are set naively!
+    [TODO] Many attributes are set to None/NULL, or are set naively!
     '''
     def __init__(self,i):
         ops=None
@@ -67,23 +94,30 @@ class pydasm_inst:
         else:
             ops=[o.strip() for o in i.op_str.split(",")]
         ops.extend(["" for x in xrange(0,3-len(ops))])
-        self.op1, self.op2, self.op3 = ops
-        self.i = i
-        self.mnemonic = i.mnemonic
+
+        self.i = i # The original CsInsn object remains accessible
+
         self.length = i.size
-        self.flags1 = None
-        self.flags2 = None
-        self.flags3 = None
-        self.type = "INSTRUCTION_TYPE_%s" % (i.mnemonic.upper)
-        self.modrm = None
-        self.sib = None
-        self.extindex = None
-        self.fpuindex = None
-        self.dispbytes = i.bytes
-        self.immbytes = None
-        self.sectionbytes = None
-        self.flags = None
+        self.type = "INSTRUCTION_TYPE_%s" % (i.mnemonic.upper())
+        self.mode = 0 
+        self.opcode = i.opcode
+        self.modrm = i.modrm
+        self.sib = i.sib
+        self.modrm_offset = 0
+        self.extindex = 0
+        self.fpuindex = 0
+        self.dispbytes = 0
+        self.immbytes = 0
+        self.sectionbytes = 0
+        self.op1, self.op2, self.op3 = ops # [TODO] These are Operand objects originally!
         self.ptr = None
+        self.flags = 0
+        self.eflags_affected = 0
+        self.eflags_used = 0
+        self.iop_written = 0
+        self.iop_read = 0
+
+        self.mnemonic = i.mnemonic
     
     def __str__(self):
         return "%s\t%s" % (self.i.mnemonic,self.i.op_str) 
@@ -1050,6 +1084,7 @@ class pydbg:
 
         # update our internal member variables.
         md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_32)
+        md.detail = True
         for i in md.disasm(data,address):
             self.instruction = i
             break
@@ -1113,6 +1148,7 @@ class pydbg:
 
         # the rstrip() is for removing extraneous trailing whitespace that libdasm sometimes leaves.
         md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_32)
+        md.detail = True
         complete    = False
         start_byte  = 0
 
